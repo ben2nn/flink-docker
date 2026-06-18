@@ -17,16 +17,39 @@ name: "Build and Push Docker Images"
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - master
-      - 'dev-*'
-    tags:
-      - '*-*.*'
-  pull_request:
-    branches:
-      - master
-      - 'dev-*'
+    inputs:
+      flink_version:
+        description: 'Flink 版本'
+        required: true
+        type: choice
+        options:
+          - '1.20'
+          - '2.0'
+          - '2.1'
+          - '2.2'
+          - 'all'
+        default: '2.2'
+      java_version:
+        description: 'Java 版本'
+        required: true
+        type: choice
+        options:
+          - '8'
+          - '11'
+          - '17'
+          - '21'
+          - 'all'
+        default: '17'
+      push_harbor:
+        description: '推送到 Harbor'
+        required: false
+        type: boolean
+        default: true
+      push_ghcr:
+        description: '推送到 GHCR'
+        required: false
+        type: boolean
+        default: true
 
 env:
   REGISTRY: ghcr.io
@@ -36,55 +59,62 @@ env:
   HARBOR_PROJECT: tis
 
 jobs:
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Generate matrix
+        id: set-matrix
+        run: |
+          # Define all possible combinations
+          ALL_COMBINATIONS='[
+            {"flink_version":"1.20","java_version":"8","dockerfile":"1.20/scala_2.12-java8-ubuntu/Dockerfile"},
+            {"flink_version":"1.20","java_version":"11","dockerfile":"1.20/scala_2.12-java11-ubuntu/Dockerfile"},
+            {"flink_version":"1.20","java_version":"17","dockerfile":"1.20/scala_2.12-java17-ubuntu/Dockerfile"},
+            {"flink_version":"2.0","java_version":"11","dockerfile":"2.0/scala_2.12-java11-ubuntu/Dockerfile"},
+            {"flink_version":"2.0","java_version":"17","dockerfile":"2.0/scala_2.12-java17-ubuntu/Dockerfile"},
+            {"flink_version":"2.0","java_version":"21","dockerfile":"2.0/scala_2.12-java21-ubuntu/Dockerfile"},
+            {"flink_version":"2.1","java_version":"11","dockerfile":"2.1/scala_2.12-java11-ubuntu/Dockerfile"},
+            {"flink_version":"2.1","java_version":"17","dockerfile":"2.1/scala_2.12-java17-ubuntu/Dockerfile"},
+            {"flink_version":"2.1","java_version":"21","dockerfile":"2.1/scala_2.12-java21-ubuntu/Dockerfile"},
+            {"flink_version":"2.2","java_version":"11","dockerfile":"2.2/scala_2.12-java11-ubuntu/Dockerfile"},
+            {"flink_version":"2.2","java_version":"17","dockerfile":"2.2/scala_2.12-java17-ubuntu/Dockerfile"},
+            {"flink_version":"2.2","java_version":"21","dockerfile":"2.2/scala_2.12-java21-ubuntu/Dockerfile"}
+          ]'
+
+          FLINK_INPUT="${{ inputs.flink_version }}"
+          JAVA_INPUT="${{ inputs.java_version }}"
+
+          # Filter based on inputs
+          FILTERED=$(echo "$ALL_COMBINATIONS" | jq --arg flink "$FLINK_INPUT" --arg java "$JAVA_INPUT" '
+            [.[] | select(
+              ($flink == "all" or .flink_version == $flink) and
+              ($java == "all" or .java_version == $java)
+            )]
+          ')
+
+          # Check if matrix is empty
+          if [ "$(echo "$FILTERED" | jq 'length')" -eq 0 ]; then
+            echo "ERROR: No matching combinations found for Flink=$FLINK_INPUT, Java=$JAVA_INPUT"
+            exit 1
+          fi
+
+          # Create matrix JSON
+          MATRIX=$(echo "$FILTERED" | jq -c '{include: .}')
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "Generated matrix:"
+          echo "$MATRIX" | jq .
+
   build_and_push:
+    needs: prepare-matrix
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # Flink 1.20.x
-          - flink_version: "1.20"
-            java_version: "8"
-            dockerfile: "1.20/scala_2.12-java8-ubuntu/Dockerfile"
-          - flink_version: "1.20"
-            java_version: "11"
-            dockerfile: "1.20/scala_2.12-java11-ubuntu/Dockerfile"
-          - flink_version: "1.20"
-            java_version: "17"
-            dockerfile: "1.20/scala_2.12-java17-ubuntu/Dockerfile"
-          # Flink 2.0.x
-          - flink_version: "2.0"
-            java_version: "11"
-            dockerfile: "2.0/scala_2.12-java11-ubuntu/Dockerfile"
-          - flink_version: "2.0"
-            java_version: "17"
-            dockerfile: "2.0/scala_2.12-java17-ubuntu/Dockerfile"
-          - flink_version: "2.0"
-            java_version: "21"
-            dockerfile: "2.0/scala_2.12-java21-ubuntu/Dockerfile"
-          # Flink 2.1.x
-          - flink_version: "2.1"
-            java_version: "11"
-            dockerfile: "2.1/scala_2.12-java11-ubuntu/Dockerfile"
-          - flink_version: "2.1"
-            java_version: "17"
-            dockerfile: "2.1/scala_2.12-java17-ubuntu/Dockerfile"
-          - flink_version: "2.1"
-            java_version: "21"
-            dockerfile: "2.1/scala_2.12-java21-ubuntu/Dockerfile"
-          # Flink 2.2.x (Latest)
-          - flink_version: "2.2"
-            java_version: "11"
-            dockerfile: "2.2/scala_2.12-java11-ubuntu/Dockerfile"
-          - flink_version: "2.2"
-            java_version: "17"
-            dockerfile: "2.2/scala_2.12-java17-ubuntu/Dockerfile"
-          - flink_version: "2.2"
-            java_version: "21"
-            dockerfile: "2.2/scala_2.12-java21-ubuntu/Dockerfile"
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
 
     steps:
       - name: Check out the repo
@@ -96,7 +126,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
 
-      - name: Log in to the Container registry
+      - name: Log in to GHCR
+        if: ${{ inputs.push_ghcr == true || github.event_name != 'workflow_dispatch' }}
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ${{ env.REGISTRY }}
@@ -104,7 +135,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Harbor
-        if: github.event_name != 'pull_request'
+        if: ${{ inputs.push_harbor == true || github.event_name != 'workflow_dispatch' }}
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ${{ env.HARBOR_REGISTRY }}
@@ -132,50 +163,73 @@ jobs:
           # Build base image name
           BASE_TAG="${FULL_VERSION}-scala_2.12-java${JAVA_VERSION}"
 
-          # Determine tags based on event type
-          TAGS="${REGISTRY}/${OWNER}/${IMAGE_REPO}:${BASE_TAG}"
-
-          # Add branch-specific tags for branch pushes
-          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_type }}" = "branch" ]; then
-            BRANCH_NAME=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
-            TAGS="${TAGS},${REGISTRY}/${OWNER}/${IMAGE_REPO}:${BRANCH_NAME}-java${JAVA_VERSION}"
-            TAGS="${TAGS},${REGISTRY}/${OWNER}/${IMAGE_REPO}:${BRANCH_NAME}-${FLINK_VERSION}-java${JAVA_VERSION}"
+          # Determine push targets
+          PUSH_GHCR="${{ inputs.push_ghcr }}"
+          PUSH_HARBOR="${{ inputs.push_harbor }}"
+          # Default to true for non-workflow_dispatch events
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            PUSH_GHCR="true"
+            PUSH_HARBOR="true"
           fi
 
-          # Add git sha tag
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          TAGS="${TAGS},${REGISTRY}/${OWNER}/${IMAGE_REPO}:${BASE_TAG}-${SHORT_SHA}"
+          TAGS=""
 
-          # Add Harbor tags (multi-arch manifest)
-          HARBOR_BASE="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/flink"
-          HARBOR_TAGS="${HARBOR_BASE}:${BASE_TAG}"
+          # GHCR tags
+          if [ "$PUSH_GHCR" = "true" ]; then
+            GHCR_BASE="${REGISTRY}/${OWNER}/${IMAGE_REPO}"
+            TAGS="${GHCR_BASE}:${BASE_TAG}"
 
-          # Add branch-specific tags for Harbor
-          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_type }}" = "branch" ]; then
-            BRANCH_NAME=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
-            HARBOR_TAGS="${HARBOR_TAGS},${HARBOR_BASE}:${BRANCH_NAME}-java${JAVA_VERSION}"
-            HARBOR_TAGS="${HARBOR_TAGS},${HARBOR_BASE}:${BRANCH_NAME}-${FLINK_VERSION}-java${JAVA_VERSION}"
+            # Add branch-specific tags for branch pushes
+            if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_type }}" = "branch" ]; then
+              BRANCH_NAME=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
+              TAGS="${TAGS},${GHCR_BASE}:${BRANCH_NAME}-java${JAVA_VERSION}"
+              TAGS="${TAGS},${GHCR_BASE}:${BRANCH_NAME}-${FLINK_VERSION}-java${JAVA_VERSION}"
+            fi
+
+            # Add git sha tag
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            TAGS="${TAGS},${GHCR_BASE}:${BASE_TAG}-${SHORT_SHA}"
           fi
 
-          # Add git sha tag for Harbor
-          HARBOR_TAGS="${HARBOR_TAGS},${HARBOR_BASE}:${BASE_TAG}-${SHORT_SHA}"
+          # Harbor tags (multi-arch manifest)
+          if [ "$PUSH_HARBOR" = "true" ]; then
+            HARBOR_BASE="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/flink"
+            HARBOR_TAG_LIST="${HARBOR_BASE}:${BASE_TAG}"
 
-          # Add latest tag for Harbor if applicable
-          if [ "${FLINK_VERSION}" = "2.2" ] && [ "${JAVA_VERSION}" = "17" ]; then
-            HARBOR_TAGS="${HARBOR_TAGS},${HARBOR_BASE}:latest"
+            # Add branch-specific tags for Harbor
+            if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_type }}" = "branch" ]; then
+              BRANCH_NAME=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
+              HARBOR_TAG_LIST="${HARBOR_TAG_LIST},${HARBOR_BASE}:${BRANCH_NAME}-java${JAVA_VERSION}"
+              HARBOR_TAG_LIST="${HARBOR_TAG_LIST},${HARBOR_BASE}:${BRANCH_NAME}-${FLINK_VERSION}-java${JAVA_VERSION}"
+            fi
+
+            # Add git sha tag for Harbor
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            HARBOR_TAG_LIST="${HARBOR_TAG_LIST},${HARBOR_BASE}:${BASE_TAG}-${SHORT_SHA}"
+
+            # Add latest tag for Harbor if applicable
+            if [ "${FLINK_VERSION}" = "2.2" ] && [ "${JAVA_VERSION}" = "17" ]; then
+              HARBOR_TAG_LIST="${HARBOR_TAG_LIST},${HARBOR_BASE}:latest"
+            fi
+
+            # Add architecture-specific tags for Harbor
+            HARBOR_TAG_LIST="${HARBOR_TAG_LIST},${HARBOR_BASE}:${BASE_TAG}-amd64"
+            HARBOR_TAG_LIST="${HARBOR_TAG_LIST},${HARBOR_BASE}:${BASE_TAG}-arm64"
+
+            if [ -n "$TAGS" ]; then
+              TAGS="${TAGS},${HARBOR_TAG_LIST}"
+            else
+              TAGS="${HARBOR_TAG_LIST}"
+            fi
           fi
 
-          # Add architecture-specific tags for Harbor
-          HARBOR_AMD64="${HARBOR_BASE}:${BASE_TAG}-amd64"
-          HARBOR_ARM64="${HARBOR_BASE}:${BASE_TAG}-arm64"
-          HARBOR_TAGS="${HARBOR_TAGS},${HARBOR_AMD64},${HARBOR_ARM64}"
+          if [ -z "$TAGS" ]; then
+            echo "ERROR: No push target selected"
+            exit 1
+          fi
 
-          # Combine all tags
-          ALL_TAGS="${TAGS},${HARBOR_TAGS}"
-
-          echo "tags=$ALL_TAGS" >> $GITHUB_OUTPUT
-          echo "GHCR tags: $TAGS"
-          echo "Harbor tags: $HARBOR_TAGS"
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          echo "Image tags: $TAGS"
 
       - name: Build and push Docker image
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
@@ -183,7 +237,7 @@ jobs:
           context: ${{ matrix.flink_version }}/scala_2.12-java${{ matrix.java_version }}-ubuntu
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64/v8
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ (inputs.push_harbor == true || inputs.push_ghcr == true) || github.event_name != 'workflow_dispatch' }}
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
