@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: "Build and Push Flink 5.0.0 Images"
+name: "Build and Push Flink New Images"
 
 on:
   workflow_dispatch:

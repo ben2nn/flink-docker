@@ -39,6 +39,9 @@ RUN set -ex; \
   rm /tmp/flink.tgz; \
   chown -R flink:flink $FLINK_HOME; \
   \
+  # Fix Windows line endings in shell scripts
+  sed -i 's/\r$//' "$FLINK_HOME/bin/config-parser-utils.sh"; \
+  \
   # Replace default REST/RPC endpoint bind address to use the container's network interface
   CONF_FILE="$FLINK_HOME/conf/flink-conf.yaml"; \
   if [ ! -e "$FLINK_HOME/conf/flink-conf.yaml" ]; then \
