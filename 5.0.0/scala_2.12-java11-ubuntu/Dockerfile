@@ -30,6 +30,7 @@ ENV FLINK_HOME=/opt/flink
 ENV PATH=$FLINK_HOME/bin:$PATH
 RUN groupadd --system --gid=9999 flink && \
     useradd --system --home-dir $FLINK_HOME --uid=9999 --gid=flink flink
+WORKDIR $FLINK_HOME
 
 # Install Flink from remote tgz
 RUN set -ex; \
