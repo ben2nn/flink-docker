@@ -28,6 +28,7 @@ RUN set -ex; \
 # Prepare environment
 ENV FLINK_HOME=/opt/flink
 ENV PATH=$FLINK_HOME/bin:$PATH
+ENV TIS_K8S_ENV=true
 RUN groupadd --system --gid=9999 flink && \
     useradd --system --home-dir $FLINK_HOME --uid=9999 --gid=flink flink
 WORKDIR $FLINK_HOME
@@ -57,6 +58,10 @@ RUN set -ex; \
     sed -i 's/taskmanager.bind-host: localhost/taskmanager.bind-host: 0.0.0.0/g' "$CONF_FILE"; \
     sed -i '/taskmanager.host: localhost/d' "$CONF_FILE"; \
   fi;
+
+# Install TIS data
+COPY opt/data /opt/data/
+RUN mkdir -p /opt/logs && chown -R flink:flink /opt/data /opt/logs
 
 # Configure container
 COPY docker-entrypoint.sh /
