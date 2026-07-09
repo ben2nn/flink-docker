@@ -1,0 +1,165 @@
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: "Build and Push Flink 5.0.0 Images"
+
+on:
+  workflow_dispatch:
+    inputs:
+      java_version:
+        description: 'Java 版本'
+        required: true
+        type: choice
+        options:
+          - '11'
+          - '17'
+          - '21'
+          - 'all'
+        default: '11'
+      push_harbor:
+        description: '推送到 Harbor'
+        required: false
+        type: boolean
+        default: true
+      push_ghcr:
+        description: '推送到 GHCR'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: ${{ github.repository_owner }}
+  IMAGE_REPO: flink
+  HARBOR_REGISTRY: harbor.hrids.com
+  HARBOR_PROJECT: tis
+
+jobs:
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Generate matrix
+        id: set-matrix
+        run: |
+          # Define all possible combinations for Flink 5.0.0
+          ALL_COMBINATIONS='[
+            {"java_version":"11","dockerfile":"5.0.0/scala_2.12-java11-ubuntu/Dockerfile"},
+            {"java_version":"17","dockerfile":"5.0.0/scala_2.12-java17-ubuntu/Dockerfile"},
+            {"java_version":"21","dockerfile":"5.0.0/scala_2.12-java21-ubuntu/Dockerfile"}
+          ]'
+
+          JAVA_INPUT="${{ inputs.java_version }}"
+
+          # Filter based on inputs
+          FILTERED=$(echo "$ALL_COMBINATIONS" | jq --arg java "$JAVA_INPUT" '
+            [.[] | select(
+              ($java == "all" or .java_version == $java)
+            )]
+          ')
+
+          # Check if matrix is empty
+          if [ "$(echo "$FILTERED" | jq 'length')" -eq 0 ]; then
+            echo "ERROR: No matching combinations found for Java=$JAVA_INPUT"
+            exit 1
+          fi
+
+          # Create matrix JSON
+          MATRIX=$(echo "$FILTERED" | jq -c '{include: .}')
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "Generated matrix:"
+          echo "$MATRIX" | jq .
+
+  build_and_push:
+    needs: prepare-matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: Log in to GHCR
+        if: ${{ inputs.push_ghcr == true || github.event_name != 'workflow_dispatch' }}
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Harbor
+        if: ${{ inputs.push_harbor == true || github.event_name != 'workflow_dispatch' }}
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ${{ env.HARBOR_REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Determine image tags
+        id: meta
+        run: |
+          TAGS=""
+
+          # GHCR tags
+          if [ "${{ inputs.push_ghcr }}" = "true" ]; then
+            GHCR_BASE="${REGISTRY}/${OWNER}/${IMAGE_REPO}"
+            TAGS="${GHCR_BASE}:5.0.0,${GHCR_BASE}:latest"
+          fi
+
+          # Harbor tags
+          if [ "${{ inputs.push_harbor }}" = "true" ]; then
+            HARBOR_BASE="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/flink"
+            HARBOR_TAGS="${HARBOR_BASE}:5.0.0,${HARBOR_BASE}:latest"
+            TAGS="${TAGS:+${TAGS},}${HARBOR_TAGS}"
+          fi
+
+          if [ -z "$TAGS" ]; then
+            echo "ERROR: No push target selected"
+            exit 1
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          echo "full_version=5.0.0" >> $GITHUB_OUTPUT
+          echo "Image tags: $TAGS"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
+        with:
+          context: 5.0.0/scala_2.12-java${{ matrix.java_version }}-ubuntu
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64/v8
+          push: ${{ (inputs.push_harbor == true || inputs.push_ghcr == true) || github.event_name != 'workflow_dispatch' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "✅ Successfully built and pushed Flink ${{ steps.meta.outputs.full_version }} with Java ${{ matrix.java_version }}"
+          echo "Tags:"
+          echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' | sed 's/^/  - /'
