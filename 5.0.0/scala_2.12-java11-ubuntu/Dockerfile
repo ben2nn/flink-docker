@@ -63,6 +63,9 @@ RUN set -ex; \
 COPY opt/data /opt/data/
 RUN mkdir -p /opt/logs && chown -R flink:flink /opt/data /opt/logs
 
+# Install TIS Flink extends JAR
+COPY tis-flink-extends-dist-5.0.0.jar /opt/flink/lib/
+
 # Configure container
 COPY docker-entrypoint.sh /
 RUN chmod +x /docker-entrypoint.sh
